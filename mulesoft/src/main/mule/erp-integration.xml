@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd">
+	<configuration-properties file="config.properties" doc:name="Configuration properties"/>
+	
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="fbe670f4-7b71-4f5f-86fe-687b1a5a6f28" >
+		<http:listener-connection host="0.0.0.0" port="8081" />
+	</http:listener-config>
+	<http:request-config name="HTTP_Request_config" doc:name="HTTP Request config" doc:id="a8f4fb9c-3be0-4cb4-b7a5-fce1a164c85f" >
+		<http:request-connection host="localhost" port="9000" />
+	</http:request-config>
+	<http:request-config name="HTTP_Request_config1" doc:name="HTTP Request config" doc:id="ea221e63-f050-40b2-8bc6-6cdab916844e" >
+		<http:request-connection protocol="HTTPS" host="omnicloud-6b-dev-ed.develop.my.salesforce.com" port="443" />
+	</http:request-config>
+	<salesforce:sfdc-config name="Salesforce_Config" doc:name="Salesforce Config" doc:id="eff9fb8e-4a00-459f-a1c3-3aacc72f1d64" >
+		<salesforce:basic-connection username="${sf.username}" password="${sf.password}" securityToken="${sf.security.token}" url="https://login.salesforce.com/services/Soap/u/57.0" />
+	</salesforce:sfdc-config>
+	<http:request-config name="HTTP_Request_Config_Salesforce" doc:name="HTTP Request config" doc:id="a9916edb-54f1-4724-8fc7-99a094746d74" >
+		<http:request-connection protocol="HTTPS" host="omnicloud-6b-dev-ed.develop.my.salesforce.com" port="443" />
+	</http:request-config>
+	<http:request-config name="ERP-Connection" doc:name="HTTP Request config" doc:id="c6ca0ded-dbae-48b6-addb-69570b961117" >
+		<http:request-connection protocol="HTTPS" host="erpnext-rca.m.frappe.cloud" port="443" />
+	</http:request-config>
+	<http:request-config name="HTTP_Request_configERP" doc:name="HTTP Request config" doc:id="0b587e5d-4e88-4c5a-a9d3-0ee6655825b8" >
+		<http:request-connection protocol="HTTPS" host="erpnext-rca.m.frappe.cloud" port="443" />
+	</http:request-config>
+	<flow name="quote-approved-event-to-erp-flow" doc:id="fc6c50f5-0113-4545-930a-ed37be796211" >
+		<salesforce:replay-channel-listener streamingChannel="/event/RCA_QuoteApproved__e" replayOption="ONLY_NEW" doc:name="Replay channel listener" doc:id="d026034a-4305-4aa1-a397-2a690bfb89d4" config-ref="Salesforce_Config"/>
+		<set-variable value='#[payload.data.payload]' doc:name="Set Variable" doc:id="b8ba801f-e9b4-4991-b567-06d425b09dd1" variableName="originalEvent"/>
+		<ee:transform doc:name="Transform Message" doc:id="c8ac54aa-dfd2-4ea5-8176-9438d94356a9" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+var original = vars.originalEvent
+var lines = if (original.LinesJson__c != null and original.LinesJson__c != "")
+              read(original.LinesJson__c, "application/json")
+            else
+              []
+---
+{
+  customer: original.Customer_Name__c,
+  transaction_date: now() as String {format: "yyyy-MM-dd"},
+  delivery_date: now() as String {format: "yyyy-MM-dd"},
+  items: lines map (line) -> {
+    item_code: line.sku,
+    qty: line.qty,
+    rate: line.netTotalPrice
+  }
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<set-variable doc:name="Set Variable" doc:id="564b243f-103a-4d2c-be32-a1afa95a518a" variableName="erpRequest" value="#[payload]"/>
+		<choice doc:name="Check ERP Order" doc:id="5aef2a68-746d-4ccc-b710-878a894f6295" >
+			<when expression='#[vars.originalEvent.ERP_Order_Id__c != null and vars.originalEvent.ERP_Order_Id__c != ""]'>
+				<logger level="INFO" doc:name="Logger" doc:id="2e36cdf0-5ec6-4d23-a08f-1ad030e75532" message="ERP order already exists for Quote #[vars.originalEvent.Id] : #[vars.originalEvent.ERP_Order_Id__c]"/>
+				<ee:transform doc:name="Transform Message" doc:id="85ee77a3-68ce-4b5f-a410-f509164c0f96" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+var original = vars.originalEvent
+---
+{
+  correlationId: original.CorrelationId__c,
+  erpOrderId: original.ERP_Order_Id__c,
+  erpOrderNumber: original.ERP_Order_Number__c,
+  status: "SUCCESS",
+  message: "Order already exists in ERPNext. Skipping duplicate creation.",
+  requestPayload: write(vars.erpRequest, "application/json"),
+  responsePayload: "",
+  httpStatus: 200,
+  attempt: if (original.ERP_Attempt_Count__c != null) original.ERP_Attempt_Count__c else 1
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+				<set-variable value="#[payload]" doc:name="Set Variable" doc:id="12457b7a-b998-4ab7-97c9-7866edb3635f" variableName="sfCallbackPayload"/>
+			</when>
+			<otherwise >
+<try doc:name="Try" doc:id="8d024c1e-f26d-47e7-a2e4-20722c4e8da7">
+
+    <until-successful maxRetries="3" millisBetweenRetries="2000" 
+        doc:name="Until Successful" doc:id="62fd3046-f6d7-487b-88d4-ca9d1ed6b1dd">
+        <try doc:name="Capture ERP Error">
+        <http:request doc:name="Request" doc:id="7a483262-372b-4665-a65f-8628870c5d4d" 
+            config-ref="HTTP_Request_configERP" method="POST" path="/api/resource/Sales Order">
+            <http:headers><![CDATA[#[output application/java
+---
+{
+    "Authorization" : p("erp.api.token"),
+    "Accept" : "application/json",
+    "Content-Type" : "application/json"
+}]]]></http:headers>
+        </http:request>
+     <error-handler>
+            <on-error-continue type="ANY">
+                <set-variable variableName="erpErrorResponse"
+                    value="#[error.errorMessage.payload.exception as String default error.description default 'Unknown error']"/>
+                <raise-error type="APP:UNKNOWN" description="#[error.description]"/>
+            </on-error-continue>
+        </error-handler>
+    </try>   
+
+
+        
+    </until-successful>
+
+    <logger level="INFO" doc:name="Logger" doc:id="438e6073-cbb0-44bb-80d7-ec49b188681c" message="#[payload]" />
+    <ee:transform doc:name="Transform Message" doc:id="2d417f21-7219-4e44-9bbf-cd151750d8a6">
+        <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var original = vars.originalEvent
+---
+{
+  correlationId: original.CorrelationId__c,
+  erpOrderId: if (payload.data.name? and payload.data.name != null) payload.data.name else "SO-00012",
+  erpOrderNumber: if (payload.data.name? and payload.data.name != null) payload.data.name else "SO-00012",
+  status: "SUCCESS",
+  message: "Order created successfully in ERPNext",
+  requestPayload: write(vars.erpRequest, "application/json"),
+  responsePayload: write(payload, "application/json"),
+  httpStatus: 201,
+  attempt: 2
+}]]></ee:set-payload>
+        </ee:message>
+    </ee:transform>
+    <set-variable value="#[payload]" doc:name="Set Variable sf callback" 
+        doc:id="93bd467a-2ac5-4404-b7c5-aee19805a87c" variableName="sfCallbackPayload" />
+
+    <error-handler>
+
+        <on-error-continue type="RETRY_EXHAUSTED" enableNotifications="true" 
+            logException="true" doc:name="Retry Exhausted">
+            <logger level="ERROR" doc:name="Retry Exhausted Logger" 
+                message="All 3 retries failed for Quote: #[vars.originalEvent.Id]"/>
+            <ee:transform doc:name="Failed Transform">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var original = vars.originalEvent
+
+---
+{
+  correlationId: original.CorrelationId__c,
+  erpOrderId: null,
+  erpOrderNumber: null,
+  status: "FAILED",
+  message: "Order creation failed after 3 retries. Error: "++ (vars.erpErrorResponse default "Unknown error"),
+  requestPayload: write(vars.erpRequest, "application/json"),
+  responsePayload: null,
+  httpStatus: 500,
+  attempt: if (original.ERP_Attempt_Count__c != null) original.ERP_Attempt_Count__c else 3
+}]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+            <set-variable value="#[payload]" variableName="sfCallbackPayload"/>
+        </on-error-continue>
+
+        <!-- Fires for any other unexpected error -->
+        <on-error-continue enableNotifications="true" logException="true" 
+            doc:name="On Error Continue" doc:id="761b181c-9ef0-49b4-a818-9583c5ff24bd">
+            <logger level="ERROR" doc:name="Error logger" 
+                doc:id="a00da4e8-3d40-464e-9981-e1fd7168015b" 
+                message="Unexpected ERP error: #[error.description]" />
+            <ee:transform doc:name="Transform Message" doc:id="1b6691e2-36ff-4d41-923f-fd74fb65bbee">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var original = vars.originalEvent
+---
+{
+  correlationId: original.CorrelationId__c,
+  erpOrderId: null,
+  erpOrderNumber: null,
+  status: "FAILED",
+  message: "Unexpected ERP failure: " ++ (error.description default "Unknown error"),
+  requestPayload: write(vars.erpRequest, "application/json"),
+  responsePayload: null,
+  httpStatus: 500,
+  attempt: if (original.ERP_Attempt_Count__c != null) original.ERP_Attempt_Count__c else 1
+}]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+            <set-variable value="#[payload]" doc:name="Set Variable" 
+                doc:id="3dea6fd6-b319-4504-84aa-19adbfb814f8" variableName="sfCallbackPayload" />
+        </on-error-continue>
+
+    </error-handler>
+</try>
+			</otherwise>
+		</choice>
+		<http:request doc:name="Request" doc:id="01b177e8-6488-4d99-9521-4d18b078b5e5" method="POST" config-ref="HTTP_Request_Config_Salesforce" path="/services/oauth2/token">
+			<http:body ><![CDATA[#[%dw 2.0
+output application/x-www-form-urlencoded
+---
+{
+    grant_type: "client_credentials",
+    client_id: p("sf.client.id"),
+    client_secret: p("sf.client.secret")
+    
+}]]]></http:body>
+			<http:headers ><![CDATA[#[output application/java
+---
+{
+	"Content-Type" : "application/x-www-form-urlencoded"
+}]]]></http:headers>
+		</http:request>
+		<set-variable value="#[payload.access_token]" doc:name="Set Variable sfAccessToken" doc:id="62a6a1ba-74e9-44ce-9b97-9abe84a5be45" variableName="sfAccessToken"/>
+		<set-payload value="#[vars.sfCallbackPayload]" doc:name="Set Payload" doc:id="9346b9eb-64f9-44cd-a869-32a598a334ef" />
+		<http:request doc:name="Request" doc:id="44fbd2f2-311b-44c8-8743-1074b87f578d" method="POST" url="https://omnicloud-6b-dev-ed.develop.my.salesforce.com/services/apexrest/erp/order-result">
+			<http:headers ><![CDATA[#[output application/java
+---
+{
+	"Authorization" : "Bearer "++ vars.sfAccessToken,
+	"Content-Type" : "application/json"
+}]]]></http:headers>
+		</http:request>
+		<logger level="INFO" doc:name="Logger" doc:id="18e23a4f-2474-4e0b-b3e7-df0eadab3b47" message="Salesforce callback response: #[payload]"/>
+	</flow>
+</mule>

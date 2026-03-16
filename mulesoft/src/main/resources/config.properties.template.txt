@@ -1,0 +1,6 @@
+sf.client.id=YOUR_CLIENT_ID_HERE
+sf.client.secret=YOUR_CLIENT_SECRET_HERE
+sf.username=YOUR_USERNAME_HERE
+sf.password=YOUR_PASSWORD_HERE
+sf.security.token=YOUR_SECURITY_TOKEN_HERE
+erp.api.token=token YOUR_KEY:YOUR_SECRET
